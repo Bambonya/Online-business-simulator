@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MMO Бизнес Симулятор</title>
+<style>
+body{margin:0;font-family:Arial;background:#0f172a;color:white}
+.screen{display:none;padding:16px}
+.screen.active{display:block}
+button{width:100%;padding:14px;margin-top:8px;border:none;border-radius:10px;background:#22c55e;font-size:16px}
+.card{background:#1e293b;padding:12px;border-radius:10px;margin-top:10px}
+.small{font-size:14px;opacity:.8}
+.flex{display:flex;gap:8px}
+.flex button{flex:1}
+input{width:100%;padding:10px;border-radius:6px;border:none;margin-top:6px}
+.progress{height:10px;background:#334155;border-radius:6px;overflow:hidden;margin-top:6px}
+.progress div{height:100%;width:0%;background:#22c55e}
+</style>
+</head>
+<body>
+
+<!-- АВТОРИЗАЦИЯ -->
+<div id="auth" class="screen active">
+<h2>👤 Вход</h2>
+<input id="login" placeholder="Логин">
+<button onclick="login()">Играть</button>
+</div>
+
+<!-- ИГРА -->
+<div id="game" class="screen">
+<h2 id="playerName"></h2>
+<div class="card">💰 Деньги: <span id="money">0</span></div>
+<div class="card">📅 Сезон: <span id="season">1</span></div>
+
+<!-- БИЗНЕСЫ -->
+<div class="card">
+<h3>🏢 Бизнесы</h3>
+<div id="businessList"></div>
+</div>
+
+<!-- АКЦИИ -->
+<div class="card">
+<h3>📊 Акции</h3>
+<div>Цена: <span id="stockPrice">100</span>₽</div>
+<div>Акций: <span id="stocks">0</span></div>
+<div class="flex">
+<button onclick="buyStock()">Купить</button>
+<button onclick="sellStock()">Продать</button>
+</div>
+</div>
+
+<!-- КОНТРАКТЫ -->
+<div class="card">
+<h3>📄 Контракты</h3>
+<div id="contractStatus" class="small">Нет активного контракта</div>
+<button onclick="startContract()">Взять контракт (20 сек)</button>
+</div>
+
+<!-- КРЕДИТЫ -->
+<div class="card">
+<h3>🏦 Кредиты</h3>
+<div id="loanInfo" class="small">Кредитов нет</div>
+<button onclick="takeLoan()">Взять кредит 1000₽</button>
+<button onclick="repayLoan()">Погасить кредит</button>
+</div>
+
+<!-- ДОНАТ -->
+<div class="card">
+<h3>💰 Донат</h3>
+<div class="flex">
+  <button onclick="buyMoney()">Купить 1000₽</button>
+  <button onclick="buySpeed()">Ускорить бизнес +1</button>
+  <button onclick="buyProfit()">Прибыль +1</button>
+</div>
+</div>
+
+<!-- ЧАТЫ -->
+<div class="card">
+<h3>💬 Глобальный чат</h3>
+<div id="globalChat" style="height:120px;overflow:auto"></div>
+<input id="globalInput" placeholder="Сообщение">
+<button onclick="sendGlobal()">Отправить</button>
+</div>
+
+<div class="card">
+<h3>👥 Клановый чат</h3>
+<div id="clanChat" style="height:120px;overflow:auto"></div>
+<input id="clanInput" placeholder="Сообщение клану">
+<button onclick="sendClanMessageWithCommand()">Отправить</button>
+</div>
+
+<div class="card">
+<h3>🟢 Онлайн в клане</h3>
+<div id="clanOnline"></div>
+</div>
+
+<!-- РЕЙТИНГ -->
+<div class="card">
+<h3>🏆 Рейтинг</h3>
+<div id="rating"></div>
+</div>
+
+<button onclick="save()">💾 Сохранить</button>
+</div>
+
+<!-- FIREBASE -->
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-database-compat.js"></script>
+
+<script>
+// === CONFIG FIREBASE ===
+const firebaseConfig = {
+ apiKey: "ВАШ_API_KEY",
+ authDomain: "PROJECT.firebaseapp.com",
+ databaseURL: "https://PROJECT.firebaseio.com",
+ projectId: "PROJECT"
+};
+firebase.initializeApp(firebaseConfig);
+const db = firebase.database();
+
+// === ПЕРЕМЕННЫЕ ===
+let user, clanId=null;
+let data;
+let contractTimer=null;
+let lastMessageTime=0;
+
+// Бизнесы
+const businessesTemplate=[
+ { name:"Магазин", level:1, speed:1, profit:1, active:false, progress:0 },
+ { name:"Фабрика", level:1, speed:1, profit:1, active:false, progress:0 },
+ { name:"IT-компания", level:1, speed:1, profit:1, active:false, progress:0 }
+];
+
+// === ДАННЫЕ ПО УМОЛЧАНИЮ ===
+function defaultData(){return{
+ money:0,
+ stocks:0,
+ stockPrice:100,
+ season:1,
+ seasonStart:Date.now(),
+ businesses:JSON.parse(JSON.stringify(businessesTemplate)),
+ contractEnd:0,
+ loan:0,
+ donations:{moneyBought:0, upgradesBought:{speed:0,profit:0}, lastPurchase:0}
+};}
+
+// === ВХОД ===
+function login(){
+ user=document.getElementById("login").value.trim();
+ if(!user) return alert("Введите логин");
+
+ data=JSON.parse(localStorage.getItem("player_"+user))||defaultData();
+
+ // офлайн доход
+ const now=Date.now();
+ const offlineIncome=Math.min(3600,(now-data.seasonStart)/1000)*calculateTotalIncome()/10;
+ data.money+=Math.floor(offlineIncome);
+ data.seasonStart=now;
+
+ document.getElementById("playerName").innerText="👤 "+user;
+ updateSeason();
+ render();
+ show("game");
+
+ setInterval(tick,1000);
+ setInterval(stockMarket,5000);
+
+ // онлайн
+ db.ref("users/"+user+"/online").set(true);
+ db.ref("users/"+user+"/online").onDisconnect().set(false);
+}
+
+// === БИЗНЕСЫ ===
+function tick(){
+ data.businesses.forEach(b=>{
+   if(b.active){
+     b.progress+=b.speed;
+     if(b.progress>=10){
+       b.progress=0;
+       b.active=false;
+       data.money+=b.profit*b.level;
+     }
+   }
+ });
+ render();
+}
+
+function startBusiness(i){data.businesses[i].active=true;}
+function calculateTotalIncome(){return data.businesses.reduce((sum,b)=>sum+b.profit*b.level,0);}
+
+// === РЕНДЕР ===
+function render(){
+ document.getElementById("money").innerText=Math.floor(data.money);
+ document.getElementById("stocks").innerText=data.stocks;
+ document.getElementById("stockPrice").innerText=data.stockPrice;
+ document.getElementById("season").innerText=data.season;
+
+ let html="";
+ data.businesses.forEach((b,i)=>{
+   html+=`<div class="card"><b>${b.name}</b><br>Уровень: ${b.level}, Скорость: ${b.speed}, Прибыль: ${b.profit}<br>
+   Статус: ${b.active?"Работает":"Ожидает"}<br>
+   <button onclick="startBusiness(${i})">Запустить</button></div>`;
+ });
+ document.getElementById("businessList").innerHTML=html;
+
+ updateRating();
+}
+
+// === АКЦИИ ===
+function stockMarket(){
+ const change=Math.floor(Math.random()*21-10);
+ data.stockPrice=Math.max(10,data.stockPrice+change);
+}
+function buyStock(){if(data.money>=data.stockPrice){data.money-=data.stockPrice;data.stocks++;render();}}
+function sellStock(){if(data.stocks>0){data.stocks--;data.money+=data.stockPrice;render();}}
+
+// === КОНТРАКТЫ ===
+function startContract(){
+ if(data.contractEnd>Date.now()) return alert("Контракт активен");
+ data.contractEnd=Date.now()+20000;
+ document.getElementById("contractStatus").innerText="Контракт выполняется...";
+ contractTimer=setTimeout(()=>{
+   data.money+=800;
+   data.contractEnd=0;
+   render();
+   alert("Контракт выполнен! +800₽");
+ },20000);
+}
+
+// === КРЕДИТЫ ===
+function takeLoan(){if(data.loan>0)return alert("Уже есть кредит");data.loan=1200;data.money+=1000;render();}
+function repayLoan(){if(data.loan===0)return; if(data.money>=data.loan){data.money-=data.loan;data.loan=0;render();}else alert("Недостаточно денег");}
+
+// === СЕЗОНЫ ===
+function updateSeason(){if(Date.now()-data.seasonStart>=86400000){data.season++;data.seasonStart=Date.now();data.money+=1000;}}
+
+// === РЕЙТИНГ ===
+function updateRating(){
+ let rating=JSON.parse(localStorage.getItem("rating")||"{}");
+ rating[user]=data.money;
+ localStorage.setItem("rating",JSON.stringify(rating));
+ let html="";
+ Object.entries(rating).sort((a,b)=>b[1]-a[1]).forEach(r=>html+=`${r[0]} — ${r[1]}₽<br>`);
+ document.getElementById("rating").innerHTML=html;
+}
+
+// === ЧАТ ГЛОБАЛЬНЫЙ ===
+const globalChatRef=db.ref("chat/global").limitToLast(50);
+globalChatRef.on("child_added",snap=>{const m=snap.val();globalChat.innerHTML+=`<div><b>${m.user}:</b> ${m.text}</div>`;globalChat.scrollTop=9999;});
+function canChat(cb){db.ref("users/"+user+"/muted").once("value",s=>{if(s.val())return alert("🚫 Вам запрещён чат"); const now=Date.now(); if(now-lastMessageTime<3000)return alert("⏱ Подождите 3 сек"); lastMessageTime=now; cb();});}
+function sendGlobal(){canChat(()=>{const text=document.getElementById("globalInput").value.trim();if(!text)return; db.ref("chat/global").push({user,text,time:Date.now()});document.getElementById("globalInput").value="";});}
+
+// === КЛАНОВЫЙ ЧАТ ===
+function sendClanMessage(){if(!clanId)return alert("Вы не в клане"); const text=document.getElementById("clanInput").value.trim();if(!text)return; canChat(()=>{db.ref(`clans/${clanId}/chat`).push({user,text,time:Date.now()});document.getElementById("clanInput").value="";});}
+function sendClanMessageWithCommand(){const text=document.getElementById("clanInput").value.trim();if(!text)return; if(processCommand(text)){document.getElementById("clanInput").value="";return;} sendClanMessage();}
+
+// === ЧАТ-КОМАНДЫ (/mute / /ban) ===
+function isAdmin(userId,callback){db.ref(`clans/${clanId}/members/${userId}/role`).once("value",snap=>callback(snap.val()==="admin"));}
+function processCommand(text){
+ if(!text.startsWith("/"))return false;
+ const args=text.split(" ");const cmd=args[0].toLowerCase();
+ if(cmd==="/mute"){const target=args[1];isAdmin(user,ok=>{if(ok)db.ref(`users/${target}/muted`).set(true);});}
+ if(cmd==="/ban"){const target=args[1];isAdmin(user,ok=>{if(ok)db.ref(`clans/${clanId}/members/${target}`).remove();});}
+ return true;
+}
+
+// === ОНЛАЙН-ПОЛЬЗОВАТЕЛИ В КЛАНЕ ===
+db.ref(`clans/${clanId}/members`).on("value",snap=>{let html=""; snap.forEach(u=>{const status=u.val().online?"🟢":"🔴"; html+=`${status} ${u.key} (${u.val().role})<br>`}); document.getElementById("clanOnline").innerHTML=html;});
+
+// === ДОНАТ ===
+function buyMoney(){if(!confirm("Купить 1000₽ за реальный платеж?"))return; data.money+=1000; data.donations.moneyBought+=1000; render(); saveOnline(); alert("Вы купили 1000₽");}
+function buySpeed(){if(!confirm("Купить +1 к скорости всех бизнесов?"))return; data.businesses.forEach(b=>b.speed+=1); data.donations.upgradesBought.speed+=1; render(); saveOnline(); alert("Скорость бизнеса увеличена!");}
+function buyProfit(){if(!confirm("Купить +1 к прибыли всех бизнесов?"))return; data.businesses.forEach(b=>b.profit+=1); data.donations.upgradesBought.profit+=1; render(); saveOnline(); alert("Прибыль бизнеса увеличена!");}
+
+// === СЕГМЕНТ УТИЛИТЫ ===
+function save(){localStorage.setItem("player_"+user,JSON.stringify(data));alert("Сохранено");}
+function show(id){document.querySelectorAll(".screen").forEach(s=>s.classList.remove("active"));document.getElementById(id).classList.add("active");}
+function saveOnline(){db.ref("users/"+user).set(data);}
+</script>
+</body>
+</html>
